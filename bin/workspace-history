@@ -16,7 +16,7 @@ import json, os, signal, socket, subprocess, threading, time
 MSG = "swaymsg" if os.environ.get("SWAYSOCK") else "i3-msg"
 ALT_SOCK = "/run/alt-release/sock"
 OVERLAY = os.path.expanduser("~/.local/bin/ws-switcher-overlay")
-OVERLAY_DELAY = 0.12   # a quick tap flips back without flashing the overlay
+OVERLAY_DELAY = 0.04   # a very quick tap flips back without flashing the overlay
 
 helper_ok = False     # True while connected to alt-release-watch
 alt_down = False      # kept up to date by watch_alt()
@@ -125,14 +125,14 @@ def step(direction):
         timer = threading.Timer(safety(), finish)
         timer.start()
         my_cycle = cycle
+    if new_cycle:   # start the overlay countdown before switching, not after
+        threading.Thread(target=delayed_show, args=(my_cycle,), daemon=True).start()
+    elif overlay_shown:
+        threading.Thread(target=overlay_update, daemon=True).start()
     subprocess.run([MSG, "--", "workspace", "--no-auto-back-and-forth", "number", str(target)],
                    stdout=subprocess.DEVNULL)
     if helper_ok and not alt_down:
         threading.Thread(target=commit).start()   # Alt was already released (very quick tap)
-    elif overlay_shown:
-        overlay_update()
-    elif new_cycle:
-        threading.Thread(target=delayed_show, args=(my_cycle,), daemon=True).start()
 
 
 def commit():

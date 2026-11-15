@@ -60,7 +60,7 @@ sway-alttab uses a third option: a sandboxed system service that reads the keybo
 ## Tweaking
 
 - **Look**: edit the CSS at the top of `ws-switcher-overlay` (colors, font size, rounding, transparency). The default is Gruvbox Dark.
-- **Delay before the strip shows**: `OVERLAY_DELAY` in `workspace-history` (default 0.12s).
+- **Delay before the strip shows**: `OVERLAY_DELAY` in `workspace-history` (default 0.04s).
 - **Fallback timer**: `safety()` in `workspace-history` (0.8s without the helper).
 
 ## License
