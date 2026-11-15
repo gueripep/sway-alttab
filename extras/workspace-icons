@@ -16,6 +16,7 @@ NICE = {
     "discord": "\U000f066f",      # Discord logo
     "pavucontrol": "",      # speaker
     "thunar": "\uf07b",          # folder
+    "osu!": "\uf11b",            # gamepad (osu! lazer)
 }
 GAME = ""                   # gamepad, for Steam games
 
