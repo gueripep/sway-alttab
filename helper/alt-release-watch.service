@@ -1,0 +1,29 @@
+[Unit]
+Description=Report Alt key press/release (only) for Windows-style Alt+Tab
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/alt-release-watch
+Restart=always
+# Throwaway unprivileged user whose only extra right is reading input devices
+DynamicUser=yes
+SupplementaryGroups=input
+RuntimeDirectory=alt-release
+RuntimeDirectoryMode=0755
+# Lock everything else down: no network, no home, read-only system, input devices only
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+DevicePolicy=closed
+DeviceAllow=char-input r
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

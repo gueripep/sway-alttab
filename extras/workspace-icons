@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# Optional: renames workspaces after the apps on them, shown as icons, e.g. "2 <chrome logo>",
+# so the Alt+Tab strip (and your bar) show icons instead of bare numbers. Works on Sway and i3.
+# Add your own apps to NICE (keys are the lowercase app_id / X11 class).
+# Keybindings use "workspace number N", so they keep working.
+# Icons come from "Symbols Nerd Font" (https://www.nerdfonts.com).
+import json, os, subprocess
+
+MSG = "swaymsg" if os.environ.get("SWAYSOCK") else "i3-msg"
+
+NICE = {
+    "google-chrome": "",    # Chrome logo
+    "alacritty": "",        # terminal
+    "spotify": "",          # Spotify logo
+    "steam": "",            # Steam logo
+    "discord": "\U000f066f",      # Discord logo
+    "pavucontrol": "",      # speaker
+    "thunar": "\uf07b",          # folder
+}
+GAME = ""                   # gamepad, for Steam games
+
+def msg(*args):
+    return subprocess.run([MSG, *args], capture_output=True, text=True).stdout
+
+def windows(node, out):
+    props = node.get("window_properties") or {}
+    is_window = node.get("window") or node.get("app_id")   # X11 window or Wayland app
+    if is_window and not node.get("nodes"):
+        cls = props.get("class") or node.get("app_id") or ""
+        if cls.startswith("steam_app_"):
+            out.append(GAME)
+        else:
+            out.append(NICE.get(cls.lower(), cls))  # unknown apps show their name
+    for c in node.get("nodes", []) + node.get("floating_nodes", []):
+        windows(c, out)
+    return out
+
+def workspaces(node, out):
+    if node.get("type") == "workspace" and node.get("name") != "__i3_scratch":
+        out.append(node)
+    for c in node.get("nodes", []):
+        workspaces(c, out)
+    return out
+
+def update():
+    tree = json.loads(msg("-t", "get_tree"))
+    for ws in workspaces(tree, []):
+        num = ws.get("num", -1)
+        if num < 0:
+            continue
+        apps = []
+        for a in windows(ws, []):
+            if a and a not in apps:
+                apps.append(a)
+        new = f"{num} {' '.join(apps)}" if apps else str(num)
+        if new != ws["name"]:
+            esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+            msg(f'rename workspace "{esc(ws["name"])}" to "{esc(new)}"')
+
+update()
+p = subprocess.Popen([MSG, "-t", "subscribe", "-m", '["window","workspace"]'],
+                     stdout=subprocess.PIPE, text=True)
+for _ in p.stdout:
+    update()

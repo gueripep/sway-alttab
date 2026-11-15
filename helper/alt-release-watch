@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""alt-release-watch: tells local clients when an Alt key goes down or up. Nothing else.
+
+Runs as a system service (alt-release-watch.service) under a throwaway user that is
+only allowed to read input devices. It reads the keyboards, ignores every key except
+Left/Right Alt, and sends one byte per Alt change to whoever is connected to
+/run/alt-release/sock:  b"D" = Alt pressed, b"U" = Alt released.
+Used by workspace-history (sway-alttab) for Windows-style Alt+Tab.
+"""
+import glob, os, select, socket, struct, time
+
+SOCK = os.environ.get("ALT_RELEASE_SOCK", "/run/alt-release/sock")
+KBD_GLOB = os.environ.get("ALT_RELEASE_GLOB", "/dev/input/by-id/*-event-kbd")
+EVENT = struct.Struct("llHHi")      # struct input_event (64-bit)
+EV_KEY, ALTS = 1, (56, 100)         # KEY_LEFTALT, KEY_RIGHTALT
+
+try:
+    os.unlink(SOCK)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(SOCK)
+os.chmod(SOCK, 0o666)
+server.listen(8)
+server.setblocking(False)
+
+clients = {}    # fd -> socket
+devices = {}    # fd -> device path
+last_scan = 0
+
+def broadcast(msg):
+    for fd, c in list(clients.items()):
+        try:
+            c.send(msg)
+        except OSError:
+            c.close()
+            del clients[fd]
+
+while True:
+    if time.monotonic() - last_scan > 5:         # pick up (re)plugged keyboards
+        last_scan = time.monotonic()
+        open_paths = set(devices.values())
+        for path in glob.glob(KBD_GLOB):
+            real = os.path.realpath(path)
+            if real not in open_paths:
+                try:
+                    devices[os.open(real, os.O_RDONLY | os.O_NONBLOCK)] = real
+                except OSError:
+                    pass
+    ready, _, _ = select.select([server.fileno(), *clients, *devices], [], [], 5)
+    for fd in ready:
+        if fd == server.fileno():
+            try:
+                c, _ = server.accept()
+                c.setblocking(False)
+                clients[c.fileno()] = c
+            except OSError:
+                pass
+        elif fd in clients:                       # clients never send; data/EOF = gone
+            try:
+                gone = not clients[fd].recv(64)
+            except BlockingIOError:
+                gone = False
+            except OSError:
+                gone = True
+            if gone:
+                clients.pop(fd).close()
+        elif fd in devices:
+            try:
+                data = os.read(fd, EVENT.size * 64)
+            except BlockingIOError:
+                continue
+            except OSError:
+                data = b""
+            if not data:                          # unplugged
+                os.close(fd)
+                del devices[fd]
+                continue
+            for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, typ, code, value = EVENT.unpack_from(data, i)
+                if typ == EV_KEY and code in ALTS and value in (0, 1):
+                    broadcast(b"D" if value else b"U")

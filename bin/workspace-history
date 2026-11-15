@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Most-recently-used workspace history for Sway/i3.
+
+Like Windows Alt+Tab: while Alt is held, each Tab (SIGUSR1) goes one step further
+back in history and Shift+Tab (SIGUSR2) one step forward. Releasing Alt makes the
+workspace you landed on the most recent. On Sway, a strip of workspaces (MRU order,
+current pick highlighted) is shown in the middle of the screen while cycling
+(~/.local/bin/ws-switcher-overlay).
+
+Sway/i3 can't report Alt's release after Tab, so Alt changes come from the
+alt-release-watch system service (/run/alt-release/sock, see helper/). It only ever sends "Alt down"/"Alt up"; this script gets
+no keyboard access. If the service isn't running, a 0.8s pause confirms instead.
+"""
+import json, os, signal, socket, subprocess, threading, time
+
+MSG = "swaymsg" if os.environ.get("SWAYSOCK") else "i3-msg"
+ALT_SOCK = "/run/alt-release/sock"
+OVERLAY = os.path.expanduser("~/.local/bin/ws-switcher-overlay")
+OVERLAY_DELAY = 0.12   # a quick tap flips back without flashing the overlay
+
+helper_ok = False     # True while connected to alt-release-watch
+alt_down = False      # kept up to date by watch_alt()
+
+lock = threading.Lock()
+history = []          # workspace numbers, most recent first
+snapshot = None       # frozen history while cycling
+idx = 0
+timer = None
+cycle = 0             # increments per Alt+Tab session
+cycle_rect = None     # output the session started on (where the overlay goes)
+overlay = None        # overlay process
+overlay_shown = False
+
+
+def safety():
+    # With the helper, Alt's release confirms and the timer is only a safety net.
+    return 10 if helper_ok else 0.8
+
+
+def ipc(*args):
+    return json.loads(subprocess.check_output([MSG, "-t", *args]))
+
+
+def focus_front(num):
+    if num in history:
+        history.remove(num)
+    history.insert(0, num)
+
+
+def focused_num():
+    for ws in ipc("get_workspaces"):
+        if ws.get("focused"):
+            return ws["num"]
+
+
+# ---- overlay (Sway only) ----
+
+def overlay_send(msg):
+    global overlay
+    if not os.environ.get("SWAYSOCK") or not os.access(OVERLAY, os.X_OK):
+        return
+    try:
+        if overlay is None or overlay.poll() is not None:
+            overlay = subprocess.Popen([OVERLAY], stdin=subprocess.PIPE, text=True,
+                                       stderr=subprocess.DEVNULL)
+        overlay.stdin.write(json.dumps(msg) + "\n")
+        overlay.stdin.flush()
+    except OSError:
+        overlay = None
+
+
+def overlay_update():
+    """Show/refresh the strip for the current snapshot (call without the lock)."""
+    global overlay_shown
+    with lock:
+        if snapshot is None:
+            return
+        nums, sel, rect = list(snapshot), idx, cycle_rect
+    names = {ws["num"]: ws["name"] for ws in ipc("get_workspaces")}
+    overlay_send({"items": [names.get(n, str(n)) for n in nums], "sel": sel, "rect": rect})
+    overlay_shown = True
+
+
+def overlay_hide():
+    global overlay_shown
+    if overlay_shown:
+        overlay_send({"hide": True})
+        overlay_shown = False
+
+
+def delayed_show(my_cycle):
+    time.sleep(OVERLAY_DELAY)
+    if snapshot is not None and cycle == my_cycle and not overlay_shown:
+        overlay_update()
+
+
+# ---- cycling ----
+
+def finish():
+    global snapshot, timer
+    with lock:
+        snapshot, timer = None, None
+        num = focused_num()
+        if num is not None and num >= 0:
+            focus_front(num)
+    overlay_hide()
+
+
+def step(direction):
+    global snapshot, idx, timer, cycle, cycle_rect
+    new_cycle = False
+    with lock:
+        if snapshot is None:
+            if len(history) < 2:
+                return
+            snapshot, idx = list(history), 0
+            cycle += 1
+            new_cycle = True
+            out = next((o for o in ipc("get_outputs") if o.get("focused")), None)
+            cycle_rect = [out["rect"]["x"], out["rect"]["y"]] if out else [0, 0]
+        idx = (idx + direction) % len(snapshot)
+        target = snapshot[idx]
+        if timer:
+            timer.cancel()
+        timer = threading.Timer(safety(), finish)
+        timer.start()
+        my_cycle = cycle
+    subprocess.run([MSG, "--", "workspace", "--no-auto-back-and-forth", "number", str(target)],
+                   stdout=subprocess.DEVNULL)
+    if helper_ok and not alt_down:
+        threading.Thread(target=commit).start()   # Alt was already released (very quick tap)
+    elif overlay_shown:
+        overlay_update()
+    elif new_cycle:
+        threading.Thread(target=delayed_show, args=(my_cycle,), daemon=True).start()
+
+
+def commit():
+    global timer
+    overlay_hide()     # hide right away; the workspace is already switched
+    time.sleep(0.15)   # let a step signal sent just before the release land first
+    with lock:
+        if timer:
+            timer.cancel()
+    finish()
+
+
+signal.signal(signal.SIGUSR1, lambda *_: threading.Thread(target=step, args=(1,)).start())
+signal.signal(signal.SIGUSR2, lambda *_: threading.Thread(target=step, args=(-1,)).start())
+signal.signal(signal.SIGHUP, lambda *_: threading.Thread(target=commit).start())
+
+
+def watch_alt():
+    """Listen to alt-release-watch; when Alt is released while cycling, commit."""
+    global helper_ok, alt_down
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.connect(ALT_SOCK)
+                helper_ok = True
+                while data := sock.recv(64):
+                    for b in data:
+                        alt_down = b == ord("D")
+                        if not alt_down and snapshot is not None:
+                            threading.Thread(target=commit).start()
+        except OSError:
+            pass
+        helper_ok, alt_down = False, False
+        time.sleep(5)   # service not running (yet); retry
+
+
+threading.Thread(target=watch_alt, daemon=True).start()
+overlay_send({"hide": True})   # start the overlay now so the first Alt+Tab shows it quickly
+
+num = focused_num()
+if num is not None and num >= 0:
+    history.append(num)
+
+proc = subprocess.Popen([MSG, "-t", "subscribe", "-m", '["workspace"]'],
+                        stdout=subprocess.PIPE, text=True)
+for line in proc.stdout:
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        continue
+    cur = (ev.get("current") or {}).get("num")
+    if cur is None or cur < 0:
+        continue
+    with lock:
+        if ev.get("change") == "focus" and snapshot is None:
+            focus_front(cur)
+        elif ev.get("change") == "empty" and cur in history:
+            history.remove(cur)
