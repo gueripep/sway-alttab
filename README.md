@@ -6,7 +6,7 @@ Windows-style **Alt+Tab for Sway workspaces**: hold Alt, tap Tab to walk back th
 
 - **Most-recently-used order**: one quick Alt+Tab flips between your two latest workspaces; keep tapping Tab to go further back. Shift+Tab goes forward.
 - **Release Alt to confirm**, just like on Windows. This is the part Sway can't do by itself (see [How it works](#how-it-works)).
-- **On-screen strip** on the screen you started from, with the current pick highlighted. A very quick tap doesn't flash it.
+- **On-screen strip** in the middle of every screen, with the current pick highlighted. A very quick tap doesn't flash it.
 - **No keyboard access for your apps**: Alt's release comes from a tiny, locked-down system service that reports nothing but "Alt down / Alt up".
 - Also works on **i3** (everything except the strip).
 
@@ -60,6 +60,7 @@ sway-alttab uses a third option: a sandboxed system service that reads the keybo
 ## Tweaking
 
 - **Look**: edit the CSS at the top of `ws-switcher-overlay` (colors, font size, rounding, transparency). The default is Gruvbox Dark.
+- **Only one screen**: set `ALL_SCREENS = False` in `ws-switcher-overlay` to show the strip only on the screen where Alt+Tab started.
 - **Delay before the strip shows**: `OVERLAY_DELAY` in `workspace-history` (default 0.04s).
 - **Fallback timer**: `safety()` in `workspace-history` (0.8s without the helper).
 

@@ -2,7 +2,8 @@
 """Alt+Tab overlay: a centered strip of workspaces (MRU order, current pick highlighted).
 
 Driven by ~/.local/bin/workspace-history through stdin, one JSON message per line:
-  {"items": ["1 ", "4 "], "sel": 1, "rect": [x, y, w, h]}   show/update on that output
+  {"items": ["1 ", "4 "], "sel": 1, "rect": [x, y]}   show/update (all screens, or
+                                                        only that output if ALL_SCREENS is off)
   {"hide": true}                                               hide
 Uses gtk-layer-shell so it floats above everything without taking focus.
 """
@@ -36,50 +37,67 @@ provider.load_from_data(CSS)
 Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
                                          Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-win = Gtk.Window()
-GtkLayerShell.init_for_window(win)
-GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
-GtkLayerShell.set_keyboard_mode(win, GtkLayerShell.KeyboardMode.NONE)
-GtkLayerShell.set_namespace(win, "ws-switcher")
-win.set_app_paintable(True)
-visual = win.get_screen().get_rgba_visual()
-if visual:
-    win.set_visual(visual)
+# Show on every screen at once; set to False to show only on the screen where
+# Alt+Tab started (the "rect" sent by workspace-history).
+ALL_SCREENS = True
 
-strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-strip.set_name("strip")
-win.add(strip)
+windows = {}   # GdkMonitor -> (window, strip)
 
 
-def monitor_for(rect):
-    """Find the GDK monitor whose logical geometry matches sway's output rect."""
+def window_for(mon):
+    if mon not in windows:
+        win = Gtk.Window()
+        GtkLayerShell.init_for_window(win)
+        GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_mode(win, GtkLayerShell.KeyboardMode.NONE)
+        GtkLayerShell.set_namespace(win, "ws-switcher")
+        GtkLayerShell.set_monitor(win, mon)
+        win.set_app_paintable(True)
+        visual = win.get_screen().get_rgba_visual()
+        if visual:
+            win.set_visual(visual)
+        strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        strip.set_name("strip")
+        win.add(strip)
+        windows[mon] = (win, strip)
+    return windows[mon]
+
+
+def monitors():
     display = Gdk.Display.get_default()
-    for i in range(display.get_n_monitors()):
-        m = display.get_monitor(i)
-        g = m.get_geometry()
-        if [g.x, g.y] == rect[:2]:
-            return m
-    return None
+    return [display.get_monitor(i) for i in range(display.get_n_monitors())]
+
+
+def drop_monitor(_display, mon):
+    if mon in windows:
+        windows.pop(mon)[0].destroy()
+
+
+Gdk.Display.get_default().connect("monitor-removed", drop_monitor)
 
 
 def handle(msg):
     if msg.get("hide"):
-        win.hide()
+        for win, _ in windows.values():
+            win.hide()
         return False
-    for child in strip.get_children():
-        strip.remove(child)
-    for i, text in enumerate(msg.get("items", [])):
-        label = Gtk.Label(label=text)
-        ctx = label.get_style_context()
-        ctx.add_class("item")
-        if i == msg.get("sel"):
-            ctx.add_class("sel")
-        strip.pack_start(label, False, False, 0)
-    mon = monitor_for(msg.get("rect", [0, 0]))
-    if mon:
-        GtkLayerShell.set_monitor(win, mon)
-    win.resize(1, 1)          # shrink to fit when the list gets shorter
-    win.show_all()
+    mons = monitors()
+    if not ALL_SCREENS:
+        rect = msg.get("rect", [0, 0])[:2]
+        mons = [m for m in mons if [m.get_geometry().x, m.get_geometry().y] == rect] or mons[:1]
+    for mon in mons:
+        win, strip = window_for(mon)
+        for child in strip.get_children():
+            strip.remove(child)
+        for i, text in enumerate(msg.get("items", [])):
+            label = Gtk.Label(label=text)
+            ctx = label.get_style_context()
+            ctx.add_class("item")
+            if i == msg.get("sel"):
+                ctx.add_class("sel")
+            strip.pack_start(label, False, False, 0)
+        win.resize(1, 1)          # shrink to fit when the list gets shorter
+        win.show_all()
     return False
 
 
